@@ -124,7 +124,7 @@ def get_rlgames_env_creator(
             module_name = f"isaacgymenvs.tasks.{task_config['env']['env_name'].lower()}"
             module = importlib.import_module(module_name)
             task_caller = getattr(module, task_name)
-        except:
+        except ImportError:
             task_caller = isaacgym_task_map[task_name]
         
         env = task_caller(

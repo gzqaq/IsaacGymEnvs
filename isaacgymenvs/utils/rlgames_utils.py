@@ -29,6 +29,7 @@ import os
 from collections import deque
 from typing import Callable, Dict, Tuple, Any
 
+import importlib.util
 import os
 import gym
 import numpy as np
@@ -39,7 +40,15 @@ from rl_games.algos_torch import torch_ext
 
 from isaacgymenvs.tasks import isaacgym_task_map
 from isaacgymenvs.utils.utils import set_seed, flatten_dict
-from eureka.utils.file_utils import import_class_from_file
+
+def import_class_from_file(file_path, function_name):
+    spec = importlib.util.spec_from_file_location("module.name", file_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    function = getattr(module, function_name)
+    return function
+
 
 def multi_gpu_get_rank(multi_gpu):
     if multi_gpu:

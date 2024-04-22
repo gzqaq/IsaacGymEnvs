@@ -53,6 +53,8 @@ class Cartpole(VecTask):
         self.dof_pos = self.dof_state.view(self.num_envs, self.num_dof, 2)[..., 0]
         self.dof_vel = self.dof_state.view(self.num_envs, self.num_dof, 2)[..., 1]
 
+        self.consecutive_successes = torch.zeros(1, dtype=torch.float, device=self.device)
+
     def create_sim(self):
         # set the up axis to be z-up given that assets are y-up by default
         self.up_axis = self.cfg["sim"]["up_axis"]
@@ -123,10 +125,12 @@ class Cartpole(VecTask):
         cart_vel = self.obs_buf[:, 1]
         cart_pos = self.obs_buf[:, 0]
 
-        self.rew_buf[:], self.reset_buf[:] = compute_cartpole_reward(
+        self.rew_buf[:], self.reset_buf[:], self.consecutive_successes[:] = compute_cartpole_reward(
             pole_angle, pole_vel, cart_vel, cart_pos,
-            self.reset_dist, self.reset_buf, self.progress_buf, self.max_episode_length
+            self.reset_dist, self.reset_buf, self.consecutive_successes, self.progress_buf, self.max_episode_length
         )
+
+        self.extras['consecutive_successes'] = self.consecutive_successes.mean() 
 
     def compute_observations(self, env_ids=None):
         if env_ids is None:
@@ -179,8 +183,8 @@ class Cartpole(VecTask):
 
 @torch.jit.script
 def compute_cartpole_reward(pole_angle, pole_vel, cart_vel, cart_pos,
-                            reset_dist, reset_buf, progress_buf, max_episode_length):
-    # type: (Tensor, Tensor, Tensor, Tensor, float, Tensor, Tensor, float) -> Tuple[Tensor, Tensor]
+                            reset_dist, reset_buf, consecutive_successes, progress_buf, max_episode_length):
+    # type: (Tensor, Tensor, Tensor, Tensor, float, Tensor, Tensor, Tensor, float) -> Tuple[Tensor, Tensor, Tensor]
 
     # reward is combo of angle deviated from upright, velocity of cart, and velocity of pole moving
     reward = 1.0 - pole_angle * pole_angle - 0.01 * torch.abs(cart_vel) - 0.005 * torch.abs(pole_vel)
@@ -193,4 +197,11 @@ def compute_cartpole_reward(pole_angle, pole_vel, cart_vel, cart_pos,
     reset = torch.where(torch.abs(pole_angle) > np.pi / 2, torch.ones_like(reset_buf), reset)
     reset = torch.where(progress_buf >= max_episode_length - 1, torch.ones_like(reset_buf), reset)
 
-    return reward, reset
+    # Average Episode Length as Success Metric
+    if reset.sum() > 0:
+        consecutive_successes = (progress_buf.float() * reset).sum() / reset.sum()
+    else:
+        consecutive_successes = torch.zeros_like(consecutive_successes).mean()
+    
+    # reward = consecutive_successes
+    return reward, reset, consecutive_successes

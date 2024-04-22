@@ -32,9 +32,8 @@ import torch
 
 from isaacgym import gymtorch
 from isaacgym import gymapi
+from isaacgym.torch_utils import *
 
-from isaacgymenvs.utils.torch_jit_utils import scale, unscale, quat_mul, quat_conjugate, quat_from_angle_axis, \
-    to_torch, get_axis_params, torch_rand_float, tensor_clamp  
 from isaacgymenvs.tasks.base.vec_task import VecTask
 
 
@@ -213,11 +212,11 @@ class AllegroHand(VecTask):
         upper = gymapi.Vec3(spacing, spacing, spacing)
 
         asset_root = os.path.join(os.path.dirname(os.path.abspath(__file__)), '../../assets')
-        allegro_hand_asset_file = "urdf/kuka_allegro_description/allegro.urdf"
+        shadow_hand_asset_file = "urdf/kuka_allegro_description/allegro.urdf"
 
         if "asset" in self.cfg["env"]:
             asset_root = self.cfg["env"]["asset"].get("assetRoot", asset_root)
-            allegro_hand_asset_file = self.cfg["env"]["asset"].get("assetFileName", allegro_hand_asset_file)
+            shadow_hand_asset_file = self.cfg["env"]["asset"].get("assetFileName", shadow_hand_asset_file)
 
         object_asset_file = self.asset_files_dict[self.object_type]
 
@@ -234,18 +233,18 @@ class AllegroHand(VecTask):
             asset_options.use_physx_armature = True
         asset_options.default_dof_drive_mode = gymapi.DOF_MODE_POS
 
-        allegro_hand_asset = self.gym.load_asset(self.sim, asset_root, allegro_hand_asset_file, asset_options)
+        shadow_hand_asset = self.gym.load_asset(self.sim, asset_root, shadow_hand_asset_file, asset_options)
 
-        self.num_shadow_hand_bodies = self.gym.get_asset_rigid_body_count(allegro_hand_asset)
-        self.num_shadow_hand_shapes = self.gym.get_asset_rigid_shape_count(allegro_hand_asset)
-        self.num_shadow_hand_dofs = self.gym.get_asset_dof_count(allegro_hand_asset)
+        self.num_shadow_hand_bodies = self.gym.get_asset_rigid_body_count(shadow_hand_asset)
+        self.num_shadow_hand_shapes = self.gym.get_asset_rigid_shape_count(shadow_hand_asset)
+        self.num_shadow_hand_dofs = self.gym.get_asset_dof_count(shadow_hand_asset)
         print("Num dofs: ", self.num_shadow_hand_dofs)
-        self.num_shadow_hand_actuators = self.num_shadow_hand_dofs
+        self.num_shadow_hand_actuators = self.num_shadow_hand_dofs #self.gym.get_asset_actuator_count(shadow_hand_asset)
 
         self.actuated_dof_indices = [i for i in range(self.num_shadow_hand_dofs)]
 
         # set shadow_hand dof properties
-        shadow_hand_dof_props = self.gym.get_asset_dof_properties(allegro_hand_asset)
+        shadow_hand_dof_props = self.gym.get_asset_dof_properties(shadow_hand_asset)
 
         self.shadow_hand_dof_lower_limits = []
         self.shadow_hand_dof_upper_limits = []
@@ -307,7 +306,7 @@ class AllegroHand(VecTask):
         max_agg_bodies = self.num_shadow_hand_bodies + 2
         max_agg_shapes = self.num_shadow_hand_shapes + 2
 
-        self.allegro_hands = []
+        self.shadow_hands = []
         self.envs = []
 
         self.object_init_state = []
@@ -318,7 +317,9 @@ class AllegroHand(VecTask):
         self.object_indices = []
         self.goal_object_indices = []
 
-        shadow_hand_rb_count = self.gym.get_asset_rigid_body_count(allegro_hand_asset)
+        #self.fingertip_handles = [self.gym.find_asset_rigid_body_index(shadow_hand_asset, name) for name in self.fingertips]
+
+        shadow_hand_rb_count = self.gym.get_asset_rigid_body_count(shadow_hand_asset)
         object_rb_count = self.gym.get_asset_rigid_body_count(object_asset)
         self.object_rb_handles = list(range(shadow_hand_rb_count, shadow_hand_rb_count + object_rb_count))
 
@@ -332,13 +333,22 @@ class AllegroHand(VecTask):
                 self.gym.begin_aggregate(env_ptr, max_agg_bodies, max_agg_shapes, True)
 
             # add hand - collision filter = -1 to use asset collision filters set in mjcf loader
-            allegro_hand_actor = self.gym.create_actor(env_ptr, allegro_hand_asset, shadow_hand_start_pose, "hand", i, -1, 0)
+            shadow_hand_actor = self.gym.create_actor(env_ptr, shadow_hand_asset, shadow_hand_start_pose, "hand", i, -1, 0)
             self.hand_start_states.append([shadow_hand_start_pose.p.x, shadow_hand_start_pose.p.y, shadow_hand_start_pose.p.z,
                                            shadow_hand_start_pose.r.x, shadow_hand_start_pose.r.y, shadow_hand_start_pose.r.z, shadow_hand_start_pose.r.w,
                                            0, 0, 0, 0, 0, 0])
-            self.gym.set_actor_dof_properties(env_ptr, allegro_hand_actor, shadow_hand_dof_props)
-            hand_idx = self.gym.get_actor_index(env_ptr, allegro_hand_actor, gymapi.DOMAIN_SIM)
+            self.gym.set_actor_dof_properties(env_ptr, shadow_hand_actor, shadow_hand_dof_props)
+            hand_idx = self.gym.get_actor_index(env_ptr, shadow_hand_actor, gymapi.DOMAIN_SIM)
             self.hand_indices.append(hand_idx)
+
+            # create fingertip force-torque sensors
+            # if self.obs_type == "full_state" or self.asymmetric_obs:
+            #     for ft_handle in self.fingertip_handles:
+            #         env_sensors = []
+            #         env_sensors.append(self.gym.create_force_sensor(env_ptr, ft_handle, sensor_pose))
+            #         self.sensors.append(env_sensors)
+
+            #     self.gym.enable_actor_dof_force_sensors(env_ptr, shadow_hand_actor)
 
             # add object
             object_handle = self.gym.create_actor(env_ptr, object_asset, object_start_pose, "object", i, 0, 0)
@@ -363,7 +373,7 @@ class AllegroHand(VecTask):
                 self.gym.end_aggregate(env_ptr)
 
             self.envs.append(env_ptr)
-            self.allegro_hands.append(allegro_hand_actor)
+            self.shadow_hands.append(shadow_hand_actor)
 
         object_rb_props = self.gym.get_actor_rigid_body_properties(env_ptr, object_handle)
         self.object_rb_masses = [prop.mass for prop in object_rb_props]
@@ -374,6 +384,7 @@ class AllegroHand(VecTask):
         self.goal_init_state = self.goal_states.clone()
         self.hand_start_states = to_torch(self.hand_start_states, device=self.device).view(self.num_envs, 13)
 
+        # self.fingertip_handles = to_torch(self.fingertip_handles, dtype=torch.long, device=self.device)
         self.object_rb_handles = to_torch(self.object_rb_handles, dtype=torch.long, device=self.device)
         self.object_rb_masses = to_torch(self.object_rb_masses, dtype=torch.float, device=self.device)
 
@@ -422,6 +433,9 @@ class AllegroHand(VecTask):
         self.goal_pos = self.goal_states[:, 0:3]
         self.goal_rot = self.goal_states[:, 3:7]
 
+        # self.fingertip_state = self.rigid_body_states[:, self.fingertip_handles][:, :, 0:13]
+        # self.fingertip_pos = self.rigid_body_states[:, self.fingertip_handles][:, :, 0:3]
+
         if self.obs_type == "full_no_vel":
             self.compute_full_observations(True)
         elif self.obs_type == "full":
@@ -443,6 +457,9 @@ class AllegroHand(VecTask):
             self.obs_buf[:, 23:30] = self.goal_pose
             self.obs_buf[:, 30:34] = quat_mul(self.object_rot, quat_conjugate(self.goal_rot))
 
+            # 3*self.num_fingertips = 15
+            #self.obs_buf[:, 42:57] = self.fingertip_pos.reshape(self.num_envs, 15)
+
             self.obs_buf[:, 34:50] = self.actions
         else:
             self.obs_buf[:, 0:self.num_shadow_hand_dofs] = unscale(self.shadow_hand_dof_pos,
@@ -456,6 +473,9 @@ class AllegroHand(VecTask):
 
             self.obs_buf[:, 45:52] = self.goal_pose
             self.obs_buf[:, 52:56] = quat_mul(self.object_rot, quat_conjugate(self.goal_rot))
+
+            # 13*self.num_fingertips = 65 4*13 = 52
+            # self.obs_buf[:, 72:137] = self.fingertip_state.reshape(self.num_envs, 65)
 
             self.obs_buf[:, 56:72] = self.actions
 
@@ -475,11 +495,19 @@ class AllegroHand(VecTask):
             self.states_buf[:, goal_obs_start:goal_obs_start + 7] = self.goal_pose
             self.states_buf[:, goal_obs_start + 7:goal_obs_start + 11] = quat_mul(self.object_rot, quat_conjugate(self.goal_rot))
 
+            # fingertip observations, state(pose and vel) + force-torque sensors
+            # todo - add later
+            # num_ft_states = 13 * self.num_fingertips  # 65
+            # num_ft_force_torques = 6 * self.num_fingertips  # 30
+
             fingertip_obs_start = goal_obs_start + 11  # 72
+            # self.states_buf[:, fingertip_obs_start:fingertip_obs_start + num_ft_states] = self.fingertip_state.reshape(self.num_envs, num_ft_states)
+            # self.states_buf[:, fingertip_obs_start + num_ft_states:fingertip_obs_start + num_ft_states +
+            #                 num_ft_force_torques] = self.force_torque_obs_scale * self.vec_sensor_tensor
 
             # obs_end = 96 + 65 + 30 = 191
             # obs_total = obs_end + num_actions = 72 + 16 = 88
-            obs_end = fingertip_obs_start
+            obs_end = fingertip_obs_start #+ num_ft_states + num_ft_force_torques
             self.states_buf[:, obs_end:obs_end + self.num_actions] = self.actions
         else:
             self.obs_buf[:, 0:self.num_shadow_hand_dofs] = unscale(self.shadow_hand_dof_pos,
@@ -496,7 +524,15 @@ class AllegroHand(VecTask):
             self.obs_buf[:, goal_obs_start:goal_obs_start + 7] = self.goal_pose
             self.obs_buf[:, goal_obs_start + 7:goal_obs_start + 11] = quat_mul(self.object_rot, quat_conjugate(self.goal_rot))
 
+            # fingertip observations, state(pose and vel) + force-torque sensors
+            # todo - add later
+            # num_ft_states = 13 * self.num_fingertips  # 65
+            # num_ft_force_torques = 6 * self.num_fingertips  # 30
+
             fingertip_obs_start = goal_obs_start + 11  # 72
+            # self.states_buf[:, fingertip_obs_start:fingertip_obs_start + num_ft_states] = self.fingertip_state.reshape(self.num_envs, num_ft_states)
+            # self.states_buf[:, fingertip_obs_start + num_ft_states:fingertip_obs_start + num_ft_states +
+            #                 num_ft_force_torques] = self.force_torque_obs_scale * self.vec_sensor_tensor
 
             # obs_end = 96 + 65 + 30 = 191
             # obs_total = obs_end + num_actions = 72 + 16 = 88
@@ -599,6 +635,7 @@ class AllegroHand(VecTask):
             self.reset_idx(env_ids, goal_env_ids)
 
         self.actions = actions.clone().to(self.device)
+
         if self.use_relative_control:
             targets = self.prev_targets[:, self.actuated_dof_indices] + self.shadow_hand_dof_speed_scale * self.dt * self.actions
             self.cur_targets[:, self.actuated_dof_indices] = tensor_clamp(targets,
@@ -654,6 +691,18 @@ class AllegroHand(VecTask):
                 self.gym.add_lines(self.viewer, self.envs[i], 1, [p0[0], p0[1], p0[2], objectx[0], objectx[1], objectx[2]], [0.85, 0.1, 0.1])
                 self.gym.add_lines(self.viewer, self.envs[i], 1, [p0[0], p0[1], p0[2], objecty[0], objecty[1], objecty[2]], [0.1, 0.85, 0.1])
                 self.gym.add_lines(self.viewer, self.envs[i], 1, [p0[0], p0[1], p0[2], objectz[0], objectz[1], objectz[2]], [0.1, 0.1, 0.85])
+
+@torch.jit.script
+def randomize_rotation(rand0, rand1, x_unit_tensor, y_unit_tensor):
+    return quat_mul(quat_from_angle_axis(rand0 * np.pi, x_unit_tensor),
+                    quat_from_angle_axis(rand1 * np.pi, y_unit_tensor))
+
+
+@torch.jit.script
+def randomize_rotation_pen(rand0, rand1, max_angle, x_unit_tensor, y_unit_tensor, z_unit_tensor):
+    rot = quat_mul(quat_from_angle_axis(0.5 * np.pi + rand0 * max_angle, x_unit_tensor),
+                   quat_from_angle_axis(rand0 * np.pi, z_unit_tensor))
+    return rot
 
 #####################################################################
 ###=========================jit functions=========================###
@@ -716,17 +765,5 @@ def compute_hand_reward(
 
     cons_successes = torch.where(num_resets > 0, av_factor*finished_cons_successes/num_resets + (1.0 - av_factor)*consecutive_successes, consecutive_successes)
 
+    # reward = cons_successes
     return reward, resets, goal_resets, progress_buf, successes, cons_successes
-
-
-@torch.jit.script
-def randomize_rotation(rand0, rand1, x_unit_tensor, y_unit_tensor):
-    return quat_mul(quat_from_angle_axis(rand0 * np.pi, x_unit_tensor),
-                    quat_from_angle_axis(rand1 * np.pi, y_unit_tensor))
-
-
-@torch.jit.script
-def randomize_rotation_pen(rand0, rand1, max_angle, x_unit_tensor, y_unit_tensor, z_unit_tensor):
-    rot = quat_mul(quat_from_angle_axis(0.5 * np.pi + rand0 * max_angle, x_unit_tensor),
-                   quat_from_angle_axis(rand0 * np.pi, z_unit_tensor))
-    return rot

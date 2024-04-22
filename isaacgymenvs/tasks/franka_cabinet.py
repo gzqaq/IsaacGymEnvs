@@ -31,8 +31,7 @@ import os
 import torch
 
 from isaacgym import gymutil, gymtorch, gymapi
-from isaacgymenvs.utils.torch_jit_utils import to_torch, get_axis_params, tensor_clamp, \
-    tf_vector, tf_combine
+from isaacgym.torch_utils import *
 from .base.vec_task import VecTask
 
 
@@ -110,6 +109,9 @@ class FrankaCabinet(VecTask):
         self.franka_dof_targets = torch.zeros((self.num_envs, self.num_dofs), dtype=torch.float, device=self.device)
 
         self.global_indices = torch.arange(self.num_envs * (2 + self.num_props), dtype=torch.int32, device=self.device).view(self.num_envs, -1)
+
+        self.successes = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
+        self.consecutive_successes = torch.zeros(1, dtype=torch.float, device=self.device)
 
         self.reset_idx(torch.arange(self.num_envs, device=self.device))
 
@@ -347,14 +349,17 @@ class FrankaCabinet(VecTask):
         self.franka_rfinger_rot = torch.zeros_like(self.franka_local_grasp_rot)
 
     def compute_reward(self, actions):
-        self.rew_buf[:], self.reset_buf[:] = compute_franka_reward(
-            self.reset_buf, self.progress_buf, self.actions, self.cabinet_dof_pos,
+        self.rew_buf[:], self.reset_buf[:], self.successes[:], self.consecutive_successes[:] = compute_franka_reward(
+            self.reset_buf, self.progress_buf, self.successes, self.consecutive_successes, self.actions, self.cabinet_dof_pos,
             self.franka_grasp_pos, self.drawer_grasp_pos, self.franka_grasp_rot, self.drawer_grasp_rot,
             self.franka_lfinger_pos, self.franka_rfinger_pos,
             self.gripper_forward_axis, self.drawer_inward_axis, self.gripper_up_axis, self.drawer_up_axis,
             self.num_envs, self.dist_reward_scale, self.rot_reward_scale, self.around_handle_reward_scale, self.open_reward_scale,
             self.finger_dist_reward_scale, self.action_penalty_scale, self.distX_offset, self.max_episode_length
         )
+
+        self.extras['successes'] = self.successes
+        self.extras['consecutive_successes'] = self.consecutive_successes.mean() 
 
     def compute_observations(self):
 
@@ -418,6 +423,7 @@ class FrankaCabinet(VecTask):
 
         self.progress_buf[env_ids] = 0
         self.reset_buf[env_ids] = 0
+        self.successes[env_ids] = 0
 
     def pre_physics_step(self, actions):
         self.actions = actions.clone().to(self.device)
@@ -480,6 +486,20 @@ class FrankaCabinet(VecTask):
                 self.gym.add_lines(self.viewer, self.envs[i], 1, [p0[0], p0[1], p0[2], py[0], py[1], py[2]], [0, 1, 0])
                 self.gym.add_lines(self.viewer, self.envs[i], 1, [p0[0], p0[1], p0[2], pz[0], pz[1], pz[2]], [0, 0, 1])
 
+@torch.jit.script
+def compute_grasp_transforms(hand_rot, hand_pos, franka_local_grasp_rot, franka_local_grasp_pos,
+                             drawer_rot, drawer_pos, drawer_local_grasp_rot, drawer_local_grasp_pos
+                             ):
+    # type: (Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor) -> Tuple[Tensor, Tensor, Tensor, Tensor]
+
+    global_franka_rot, global_franka_pos = tf_combine(
+        hand_rot, hand_pos, franka_local_grasp_rot, franka_local_grasp_pos)
+    global_drawer_rot, global_drawer_pos = tf_combine(
+        drawer_rot, drawer_pos, drawer_local_grasp_rot, drawer_local_grasp_pos)
+
+    return global_franka_rot, global_franka_pos, global_drawer_rot, global_drawer_pos
+
+
 #####################################################################
 ###=========================jit functions=========================###
 #####################################################################
@@ -487,14 +507,14 @@ class FrankaCabinet(VecTask):
 
 @torch.jit.script
 def compute_franka_reward(
-    reset_buf, progress_buf, actions, cabinet_dof_pos,
+    reset_buf, progress_buf, successes, consecutive_successes, actions, cabinet_dof_pos,
     franka_grasp_pos, drawer_grasp_pos, franka_grasp_rot, drawer_grasp_rot,
     franka_lfinger_pos, franka_rfinger_pos,
     gripper_forward_axis, drawer_inward_axis, gripper_up_axis, drawer_up_axis,
     num_envs, dist_reward_scale, rot_reward_scale, around_handle_reward_scale, open_reward_scale,
     finger_dist_reward_scale, action_penalty_scale, distX_offset, max_episode_length
 ):
-    # type: (Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, int, float, float, float, float, float, float, float, float) -> Tuple[Tensor, Tensor]
+    # type: (Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, int, float, float, float, float, float, float, float, float) -> Tuple[Tensor, Tensor, Tensor, Tensor]
 
     # distance from hand to the drawer
     d = torch.norm(franka_grasp_pos - drawer_grasp_pos, p=2, dim=-1)
@@ -546,22 +566,13 @@ def compute_franka_reward(
     rewards = torch.where(franka_rfinger_pos[:, 0] < drawer_grasp_pos[:, 0] - distX_offset,
                           torch.ones_like(rewards) * -1, rewards)
     
+
     # reset if drawer is open or max length reached
+    successes = torch.where(cabinet_dof_pos[:, 3] > 0.39, torch.ones_like(successes), successes)
     reset_buf = torch.where(cabinet_dof_pos[:, 3] > 0.39, torch.ones_like(reset_buf), reset_buf)
     reset_buf = torch.where(progress_buf >= max_episode_length - 1, torch.ones_like(reset_buf), reset_buf)
 
-    return rewards, reset_buf
+    consecutive_successes = torch.where(reset_buf > 0, successes * reset_buf, consecutive_successes).mean()
 
-
-@torch.jit.script
-def compute_grasp_transforms(hand_rot, hand_pos, franka_local_grasp_rot, franka_local_grasp_pos,
-                             drawer_rot, drawer_pos, drawer_local_grasp_rot, drawer_local_grasp_pos
-                             ):
-    # type: (Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor) -> Tuple[Tensor, Tensor, Tensor, Tensor]
-
-    global_franka_rot, global_franka_pos = tf_combine(
-        hand_rot, hand_pos, franka_local_grasp_rot, franka_local_grasp_pos)
-    global_drawer_rot, global_drawer_pos = tf_combine(
-        drawer_rot, drawer_pos, drawer_local_grasp_rot, drawer_local_grasp_pos)
-
-    return global_franka_rot, global_franka_pos, global_drawer_rot, global_drawer_pos
+    # rewards = cabinet_dof_pos[:, 3] > 0.39
+    return rewards, reset_buf, successes, consecutive_successes

@@ -96,6 +96,7 @@ class Ingenuity(VecTask):
         self.forces = torch.zeros((self.num_envs, bodies_per_env, 3), dtype=torch.float32, device=self.device, requires_grad=False)
 
         self.all_actor_indices = torch.arange(self.num_envs * 2, dtype=torch.int32, device=self.device).reshape((self.num_envs, 2))
+        self.consecutive_successes = torch.zeros(1, dtype=torch.float, device=self.device)
 
         if self.viewer:
             cam_pos = gymapi.Vec3(2.25, 2.25, 3.0)
@@ -138,7 +139,7 @@ class Ingenuity(VecTask):
         compiler.attrib["inertiafromgeom"] = "true"
 
         mesh_asset = ET.SubElement(root, "asset")
-
+                
         model_path = "../assets/glb/ingenuity/"
         mesh = ET.SubElement(mesh_asset, "mesh")
         mesh.attrib["file"] = model_path + "chassis.glb"
@@ -393,23 +394,25 @@ class Ingenuity(VecTask):
         return self.obs_buf
 
     def compute_reward(self):
-        self.rew_buf[:], self.reset_buf[:] = compute_ingenuity_reward(
+        self.rew_buf[:], self.reset_buf[:], self.consecutive_successes[:] = compute_ingenuity_reward(
             self.root_positions,
             self.target_root_positions,
             self.root_quats,
             self.root_linvels,
             self.root_angvels,
-            self.reset_buf, self.progress_buf, self.max_episode_length
+            self.reset_buf, self.consecutive_successes, 
+            self.progress_buf, self.max_episode_length
         )
 
+        self.extras['consecutive_successes'] = self.consecutive_successes.mean() 
 
 #####################################################################
 ###=========================jit functions=========================###
 #####################################################################
 
 @torch.jit.script
-def compute_ingenuity_reward(root_positions, target_root_positions, root_quats, root_linvels, root_angvels, reset_buf, progress_buf, max_episode_length):
-    # type: (Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, float) -> Tuple[Tensor, Tensor]
+def compute_ingenuity_reward(root_positions, target_root_positions, root_quats, root_linvels, root_angvels, reset_buf, consecutive_successes, progress_buf, max_episode_length):
+    # type: (Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, float) -> Tuple[Tensor, Tensor, Tensor]
 
     # distance to target
     target_dist = torch.sqrt(torch.square(target_root_positions - root_positions).sum(-1))
@@ -435,6 +438,7 @@ def compute_ingenuity_reward(root_positions, target_root_positions, root_quats, 
     die = torch.where(root_positions[..., 2] < 0.5, ones, die)
 
     # resets due to episode length
+    consecutive_successes = -target_dist.mean()
     reset = torch.where(progress_buf >= max_episode_length - 1, ones, die)
 
-    return reward, reset
+    return reward, reset, consecutive_successes

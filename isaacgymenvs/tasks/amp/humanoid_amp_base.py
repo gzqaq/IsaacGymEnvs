@@ -30,12 +30,13 @@
 import numpy as np
 import os
 import torch
+import sys 
 
 from isaacgym import gymtorch
 from isaacgym import gymapi
-from isaacgymenvs.utils.torch_jit_utils import quat_mul, to_torch, get_axis_params, calc_heading_quat_inv, \
-     exp_map_to_quat, quat_to_tan_norm, my_quat_rotate, calc_heading_quat_inv
+from isaacgym.torch_utils import *
 
+from isaacgymenvs.utils.torch_jit_utils import *
 from ..base.vec_task import VecTask
 
 DOF_BODY_IDS = [1, 2, 3, 4, 6, 7, 9, 10, 11, 12, 13, 14]
@@ -389,12 +390,12 @@ class HumanoidAMPBase(VecTask):
 
         return
 
-    def render(self):
+    def render(self, mode="rgb_array"):
         if self.viewer and self.camera_follow:
             self._update_camera()
 
-        super().render()
-        return
+        return super().render(mode=mode)
+        # return
 
     def _build_key_body_ids_tensor(self, env_ptr, actor_handle):
         body_ids = []
@@ -454,10 +455,6 @@ class HumanoidAMPBase(VecTask):
     def _update_debug_viz(self):
         self.gym.clear_lines(self.viewer)
         return
-
-#####################################################################
-###=========================jit functions=========================###
-#####################################################################
 
 @torch.jit.script
 def dof_to_obs(pose):
@@ -528,12 +525,6 @@ def compute_humanoid_observations(root_states, dof_pos, dof_vel, key_body_pos, l
     return obs
 
 @torch.jit.script
-def compute_humanoid_reward(obs_buf):
-    # type: (Tensor) -> Tensor
-    reward = torch.ones_like(obs_buf[:, 0])
-    return reward
-
-@torch.jit.script
 def compute_humanoid_reset(reset_buf, progress_buf, contact_buf, contact_body_ids, rigid_body_pos,
                            max_episode_length, enable_early_termination, termination_height):
     # type: (Tensor, Tensor, Tensor, Tensor, Tensor, float, bool, float) -> Tuple[Tensor, Tensor]
@@ -560,3 +551,14 @@ def compute_humanoid_reset(reset_buf, progress_buf, contact_buf, contact_body_id
     reset = torch.where(progress_buf >= max_episode_length - 1, torch.ones_like(reset_buf), terminated)
 
     return reset, terminated
+
+
+#####################################################################
+###=========================jit functions=========================###
+#####################################################################
+
+@torch.jit.script
+def compute_humanoid_reward(obs_buf):
+    # type: (Tensor) -> Tensor
+    reward = torch.ones_like(obs_buf[:, 0])
+    return reward

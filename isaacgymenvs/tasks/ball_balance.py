@@ -33,8 +33,7 @@ import torch
 import xml.etree.ElementTree as ET
 
 from isaacgym import gymutil, gymtorch, gymapi
-
-from isaacgymenvs.utils.torch_jit_utils import to_torch, torch_rand_float, tensor_clamp, torch_random_dir_2
+from isaacgym.torch_utils import *
 from .base.vec_task import VecTask
 
 
@@ -119,6 +118,8 @@ class BallBalance(VecTask):
 
         # vis
         self.axes_geom = gymutil.AxesGeometry(0.2)
+
+        self.consecutive_successes = torch.zeros(1, dtype=torch.float, device=self.device)
 
     def create_sim(self):
         self.dt = self.sim_params.dt
@@ -352,13 +353,16 @@ class BallBalance(VecTask):
         return self.obs_buf
 
     def compute_reward(self):
-        self.rew_buf[:], self.reset_buf[:] = compute_bbot_reward(
+        self.rew_buf[:], self.reset_buf[:], self.consecutive_successes[:] = compute_bbot_reward(
             self.tray_positions,
             self.ball_positions,
             self.ball_linvels,
             self.ball_radius,
-            self.reset_buf, self.progress_buf, self.max_episode_length
+            self.reset_buf, self.consecutive_successes, 
+            self.progress_buf, self.max_episode_length
         )
+
+        self.extras['consecutive_successes'] = self.consecutive_successes.mean() 
 
     def reset_idx(self, env_ids):
         num_resets = len(env_ids)
@@ -457,8 +461,8 @@ class BallBalance(VecTask):
 
 
 @torch.jit.script
-def compute_bbot_reward(tray_positions, ball_positions, ball_velocities, ball_radius, reset_buf, progress_buf, max_episode_length):
-    # type: (Tensor, Tensor, Tensor, float, Tensor, Tensor, float) -> Tuple[Tensor, Tensor]
+def compute_bbot_reward(tray_positions, ball_positions, ball_velocities, ball_radius, reset_buf, consecutive_successes, progress_buf, max_episode_length):
+    # type: (Tensor, Tensor, Tensor, float, Tensor, Tensor, Tensor, float) -> Tuple[Tensor, Tensor, Tensor]
     # calculating the norm for ball distance to desired height above the ground plane (i.e. 0.7)
     ball_dist = torch.sqrt(ball_positions[..., 0] * ball_positions[..., 0] +
                            (ball_positions[..., 2] - 0.7) * (ball_positions[..., 2] - 0.7) +
@@ -473,4 +477,11 @@ def compute_bbot_reward(tray_positions, ball_positions, ball_velocities, ball_ra
     reset = torch.where(progress_buf >= max_episode_length - 1, torch.ones_like(reset_buf), reset_buf)
     reset = torch.where(ball_positions[..., 2] < ball_radius * 1.5, torch.ones_like(reset_buf), reset)
 
-    return reward, reset
+    # Average Episode Length as Success Metric
+    if reset.sum() > 0:
+        consecutive_successes = (progress_buf.float() * reset).sum() / reset.sum()
+    else:
+        consecutive_successes = torch.zeros_like(consecutive_successes).mean()
+    
+    # reward = consecutive_successes
+    return reward, reset, consecutive_successes

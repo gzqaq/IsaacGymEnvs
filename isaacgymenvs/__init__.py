@@ -25,6 +25,9 @@ def make(
     cfg: DictConfig = None
 ): 
     from isaacgymenvs.utils.rlgames_utils import get_rlgames_env_creator
+
+    env_path = cfg.env_path
+
     # create hydra config if no config passed in
     if cfg is None:
         # reset current hydra config if already parsed (but not passed in here)
@@ -48,6 +51,7 @@ def make(
         rl_device=rl_device,
         graphics_device_id=graphics_device_id,
         headless=headless,
+        env_path=env_path,
         multi_gpu=multi_gpu,
         virtual_screen_capture=virtual_screen_capture,
         force_render=force_render,

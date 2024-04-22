@@ -30,8 +30,7 @@
 import torch
 import numpy as np
 
-from isaacgymenvs.utils.torch_jit_utils import quat_mul, quat_conjugate, quat_from_angle_axis, \
-    to_torch, get_axis_params, torch_rand_float, tensor_clamp  
+from isaacgym.torch_utils import *
 
 @torch.jit.script
 def my_quat_rotate(q, v):

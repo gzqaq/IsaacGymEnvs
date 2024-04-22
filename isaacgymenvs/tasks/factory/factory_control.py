@@ -34,8 +34,7 @@ Imported by base, environment, and task classes. Not directly executed.
 import math
 import torch
 
-from isaacgymenvs.utils import torch_jit_utils as torch_utils
-
+from isaacgym import torch_utils
 
 
 def compute_dof_pos_target(cfg_ctrl,

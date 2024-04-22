@@ -96,6 +96,8 @@ class Quadcopter(VecTask):
 
         self.all_actor_indices = torch.arange(self.num_envs, dtype=torch.int32, device=self.device)
 
+        self.consecutive_successes = torch.zeros(1, dtype=torch.float, device=self.device)
+
         if self.viewer:
             cam_pos = gymapi.Vec3(1.0, 1.0, 1.8)
             cam_target = gymapi.Vec3(2.2, 2.0, 1.0)
@@ -370,22 +372,23 @@ class Quadcopter(VecTask):
         return self.obs_buf
 
     def compute_reward(self):
-        self.rew_buf[:], self.reset_buf[:] = compute_quadcopter_reward(
+        self.rew_buf[:], self.reset_buf[:], self.consecutive_successes[:] = compute_quadcopter_reward(
             self.root_positions,
             self.root_quats,
             self.root_linvels,
             self.root_angvels,
-            self.reset_buf, self.progress_buf, self.max_episode_length
+            self.reset_buf, self.consecutive_successes, self.progress_buf, self.max_episode_length
         )
 
+        self.extras['consecutive_successes'] = self.consecutive_successes.mean() 
 
 #####################################################################
 ###=========================jit functions=========================###
 #####################################################################
 
 @torch.jit.script
-def compute_quadcopter_reward(root_positions, root_quats, root_linvels, root_angvels, reset_buf, progress_buf, max_episode_length):
-    # type: (Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, float) -> Tuple[Tensor, Tensor]
+def compute_quadcopter_reward(root_positions, root_quats, root_linvels, root_angvels, reset_buf, consecutive_successes, progress_buf, max_episode_length):
+    # type: (Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, float) -> Tuple[Tensor, Tensor, Tensor]
 
     # distance to target
     target_dist = torch.sqrt(root_positions[..., 0] * root_positions[..., 0] +
@@ -413,6 +416,9 @@ def compute_quadcopter_reward(root_positions, root_quats, root_linvels, root_ang
     die = torch.where(root_positions[..., 2] < 0.3, ones, die)
 
     # resets due to episode length
+    consecutive_successes = -target_dist.mean()
     reset = torch.where(progress_buf >= max_episode_length - 1, ones, die)
+    # consecutive_successes = torch.where(reset_buf > 0, successes * reset_buf, consecutive_successes).mean()
 
-    return reward, reset
+    # reward = consecutive_successes
+    return reward, reset, consecutive_successes

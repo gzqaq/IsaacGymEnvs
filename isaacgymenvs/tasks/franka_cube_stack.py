@@ -32,8 +32,9 @@ import torch
 
 from isaacgym import gymtorch
 from isaacgym import gymapi
+from isaacgym.torch_utils import *
 
-from isaacgymenvs.utils.torch_jit_utils import quat_mul, to_torch, tensor_clamp  
+from isaacgymenvs.utils.torch_jit_utils import *
 from isaacgymenvs.tasks.base.vec_task import VecTask
 
 
@@ -154,11 +155,14 @@ class FrankaCubeStack(VecTask):
         self.kd = 2 * torch.sqrt(self.kp)
         self.kp_null = to_torch([10.] * 7, device=self.device)
         self.kd_null = 2 * torch.sqrt(self.kp_null)
-        #self.cmd_limit = None                   # filled in later
+        #self.cmd_limit = None                   
 
         # Set control limits
         self.cmd_limit = to_torch([0.1, 0.1, 0.1, 0.5, 0.5, 0.5], device=self.device).unsqueeze(0) if \
         self.control_type == "osc" else self._franka_effort_limits[:7].unsqueeze(0)
+
+        self.successes = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
+        self.consecutive_successes = torch.zeros(1, dtype=torch.float, device=self.device)
 
         # Reset all environments
         self.reset_idx(torch.arange(self.num_envs, device=self.device))
@@ -443,10 +447,13 @@ class FrankaCubeStack(VecTask):
         self._update_states()
 
     def compute_reward(self, actions):
-        self.rew_buf[:], self.reset_buf[:] = compute_franka_reward(
-            self.reset_buf, self.progress_buf, self.actions, self.states, self.reward_settings, self.max_episode_length
+        self.rew_buf[:], self.reset_buf[:], self.successes[:], self.consecutive_successes[:] = compute_franka_reward(
+            self.reset_buf, self.progress_buf, self.successes, self.consecutive_successes, self.actions, self.states, self.reward_settings, self.max_episode_length
         )
 
+        self.extras['successes'] = self.successes
+        self.extras['consecutive_successes'] = self.consecutive_successes.mean() 
+        
     def compute_observations(self):
         self._refresh()
         obs = ["cubeA_quat", "cubeA_pos", "cubeA_to_cubeB_pos", "eef_pos", "eef_quat"]
@@ -512,6 +519,7 @@ class FrankaCubeStack(VecTask):
 
         self.progress_buf[env_ids] = 0
         self.reset_buf[env_ids] = 0
+        self.successes[env_ids] = 0
 
     def _reset_init_cube_state(self, cube, env_ids, check_valid=True):
         """
@@ -696,9 +704,9 @@ class FrankaCubeStack(VecTask):
 
 @torch.jit.script
 def compute_franka_reward(
-    reset_buf, progress_buf, actions, states, reward_settings, max_episode_length
+    reset_buf, progress_buf, successes, consecutive_successes, actions, states, reward_settings, max_episode_length
 ):
-    # type: (Tensor, Tensor, Tensor, Dict[str, Tensor], Dict[str, float], float) -> Tuple[Tensor, Tensor]
+    # type: (Tensor, Tensor, Tensor, Tensor, Tensor, Dict[str, Tensor], Dict[str, float], float) -> Tuple[Tensor, Tensor, Tensor, Tensor]
 
     # Compute per-env physical parameters
     target_height = states["cubeB_size"] + states["cubeA_size"] / 2.0
@@ -742,6 +750,8 @@ def compute_franka_reward(
     )
 
     # Compute resets
+    successes = torch.where(stack_reward > 0, torch.ones_like(successes), successes)
     reset_buf = torch.where((progress_buf >= max_episode_length - 1) | (stack_reward > 0), torch.ones_like(reset_buf), reset_buf)
 
-    return rewards, reset_buf
+    consecutive_successes = torch.where(reset_buf > 0, successes * reset_buf, consecutive_successes).mean()
+    return rewards, reset_buf, successes, consecutive_successes

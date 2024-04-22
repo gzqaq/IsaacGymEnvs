@@ -27,7 +27,6 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 # python
-#import pwd
 import getpass
 import tempfile
 import time
@@ -154,5 +153,4 @@ def get_username():
 def project_tmp_dir():
     tmp_dir_name = f'ige_{get_username()}'
     return safe_ensure_dir_exists(join(tempfile.gettempdir(), tmp_dir_name))
-
 # EOF

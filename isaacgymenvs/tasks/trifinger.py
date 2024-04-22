@@ -32,7 +32,8 @@ import torch
 
 from isaacgym import gymtorch
 from isaacgym import gymapi
-from isaacgymenvs.utils.torch_jit_utils import quat_mul 
+from isaacgym.torch_utils import *
+
 from collections import OrderedDict
 
 project_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
@@ -459,6 +460,7 @@ class Trifinger(VecTask):
         self._successes_pos = torch.zeros(self.num_envs, device=self.device, dtype=torch.long)
         self._successes_quat = torch.zeros(self.num_envs, device=self.device, dtype=torch.long)
 
+        self.consecutive_successes = torch.zeros(1, dtype=torch.float, device=self.device)
 
         self.__configure_mdp_spaces()
 
@@ -714,9 +716,10 @@ class Trifinger(VecTask):
         self.rew_buf[:] = 0.
         self.reset_buf[:] = 0.
 
-        self.rew_buf[:], self.reset_buf[:], log_dict = compute_trifinger_reward(
+        self.rew_buf[:], self.reset_buf[:], log_dict, self.consecutive_successes[:] = compute_trifinger_reward(
             self.obs_buf,
             self.reset_buf,
+            self.consecutive_successes,
             self.progress_buf,
             self.max_episode_length,
             self.cfg["sim"]["dt"],
@@ -1054,6 +1057,7 @@ class Trifinger(VecTask):
 
         # check termination conditions (success only)
         self._check_termination()
+        self.extras['consecutive_successes'] = self._successes.float().mean()
 
         if torch.sum(self.reset_buf) > 0:
             self._step_info['consecutive_successes'] = np.mean(self._successes.float().cpu().numpy())
@@ -1093,7 +1097,6 @@ class Trifinger(VecTask):
         else:
             # Check for task completion if both orientation goal is within a threshold
             task_completion_reset = goal_orientation_reset
-
         self._successes = task_completion_reset
         self._successes_pos = goal_position_reset
         self._successes_quat = goal_orientation_reset
@@ -1250,27 +1253,10 @@ class Trifinger(VecTask):
 
     @property
     def env_steps_count(self) -> int:
-        """Returns the total number of environment steps aggregated across parallel environments."""
         return self.gym.get_frame_count(self.sim) * self.num_envs
-
-#####################################################################
-###=========================jit functions=========================###
-#####################################################################
 
 @torch.jit.script
 def lgsk_kernel(x: torch.Tensor, scale: float = 50.0, eps:float=2) -> torch.Tensor:
-    """Defines logistic kernel function to bound input to [-0.25, 0)
-
-    Ref: https://arxiv.org/abs/1901.08652 (page 15)
-
-    Args:
-        x: Input tensor.
-        scale: Scaling of the kernel function (controls how wide the 'bell' shape is')
-        eps: Controls how 'tall' the 'bell' shape is.
-
-    Returns:
-        Output tensor computed using kernel.
-    """
     scaled = x * scale
     return 1.0 / (scaled.exp() + eps + (-scaled).exp())
 
@@ -1290,9 +1276,127 @@ def gen_keypoints(pose: torch.Tensor, num_keypoints: int = 8, size: Tuple[float,
     return keypoints_buf
 
 @torch.jit.script
+def compute_trifinger_observations_states(
+        asymmetric_obs: bool,
+        dof_position: torch.Tensor,
+        dof_velocity: torch.Tensor,
+        object_state: torch.Tensor,
+        object_goal_poses: torch.Tensor,
+        actions: torch.Tensor,
+        fingertip_state: torch.Tensor,
+        joint_torques: torch.Tensor,
+        tip_wrenches: torch.Tensor
+):
+
+    num_envs = dof_position.shape[0]
+
+    obs_buf = torch.cat([
+        dof_position,
+        dof_velocity,
+        object_state[:, 0:7], # pose
+        object_goal_poses,
+        actions
+    ], dim=-1)
+
+    if asymmetric_obs:
+        states_buf = torch.cat([
+            obs_buf,
+            object_state[:, 7:13], # linear / angular velocity
+            fingertip_state.reshape(num_envs, -1),
+            joint_torques,
+            tip_wrenches
+        ], dim=-1)
+    else:
+        states_buf = obs_buf
+
+    return obs_buf, states_buf
+
+
+@torch.jit.script
+def random_xy(num: int, max_com_distance_to_center: float, device: str) -> Tuple[torch.Tensor, torch.Tensor]:
+    # sample radius of circle
+    radius = torch.sqrt(torch.rand(num, dtype=torch.float, device=device))
+    radius *= max_com_distance_to_center
+    # sample theta of point
+    theta = 2 * np.pi * torch.rand(num, dtype=torch.float, device=device)
+    # x,y-position of the cube
+    x = radius * torch.cos(theta)
+    y = radius * torch.sin(theta)
+
+    return x, y
+
+
+@torch.jit.script
+def random_z(num: int, min_height: float, max_height: float, device: str) -> torch.Tensor:
+    z = torch.rand(num, dtype=torch.float, device=device)
+    z = (max_height - min_height) * z + min_height
+
+    return z
+
+
+@torch.jit.script
+def default_orientation(num: int, device: str) -> torch.Tensor:
+    quat = torch.zeros((num, 4,), dtype=torch.float, device=device)
+    quat[..., -1] = 1.0
+
+    return quat
+
+
+@torch.jit.script
+def random_orientation(num: int, device: str) -> torch.Tensor:
+    # sample random orientation from normal distribution
+    quat = torch.randn((num, 4,), dtype=torch.float, device=device)
+    # normalize the quaternion
+    quat = torch.nn.functional.normalize(quat, p=2., dim=-1, eps=1e-12)
+
+    return quat
+
+@torch.jit.script
+def random_orientation_within_angle(num: int, device:str, base: torch.Tensor, max_angle: float):
+    quat = torch.zeros((num, 4,), dtype=torch.float, device=device)
+
+    rand = torch.rand((num, 3), dtype=torch.float, device=device)
+
+    c = torch.cos(rand[:, 0]*max_angle)
+    n = torch.sqrt((1.-c)/2.)
+
+    quat[:, 3] = torch.sqrt((1+c)/2.)
+    quat[:, 2] = (rand[:, 1]*2.-1.) * n
+    quat[:, 0] = (torch.sqrt(1-quat[:, 2]**2.) * torch.cos(2*np.pi*rand[:, 2])) * n
+    quat[:, 1] = (torch.sqrt(1-quat[:, 2]**2.) * torch.sin(2*np.pi*rand[:, 2])) * n
+
+    # floating point errors can cause it to  be slightly off, re-normalise
+    quat = torch.nn.functional.normalize(quat, p=2., dim=-1, eps=1e-12)
+
+    return quat_mul(quat, base)
+
+
+@torch.jit.script
+def random_angular_vel(num: int, device: str, magnitude_stdev: float) -> torch.Tensor:
+    axis = torch.randn((num, 3,), dtype=torch.float, device=device)
+    axis /= torch.norm(axis, p=2, dim=-1).view(-1, 1)
+    magnitude = torch.randn((num, 1,), dtype=torch.float, device=device)
+    magnitude *= magnitude_stdev
+    return magnitude * axis
+
+@torch.jit.script
+def random_yaw_orientation(num: int, device: str) -> torch.Tensor:
+    roll = torch.zeros(num, dtype=torch.float, device=device)
+    pitch = torch.zeros(num, dtype=torch.float, device=device)
+    yaw = 2 * np.pi * torch.rand(num, dtype=torch.float, device=device)
+
+    return quat_from_euler_xyz(roll, pitch, yaw)
+
+
+#####################################################################
+###=========================jit functions=========================###
+#####################################################################
+
+@torch.jit.script
 def compute_trifinger_reward(
         obs_buf: torch.Tensor,
         reset_buf: torch.Tensor,
+        consecutive_successes: torch.Tensor,
         progress_buf: torch.Tensor,
         episode_length: int,
         dt: float,
@@ -1307,7 +1411,7 @@ def compute_trifinger_reward(
         fingertip_state: torch.Tensor,
         last_fingertip_state: torch.Tensor,
         use_keypoints: bool
-) -> Tuple[torch.Tensor, torch.Tensor, Dict[str, torch.Tensor]]:
+) -> Tuple[torch.Tensor, torch.Tensor, Dict[str, torch.Tensor], torch.Tensor]:
 
     ft_sched_start = 0
     ft_sched_end = 5e7
@@ -1380,133 +1484,4 @@ def compute_trifinger_reward(
         'reward': total_reward,
     }
 
-    return total_reward, reset, info
-
-
-@torch.jit.script
-def compute_trifinger_observations_states(
-        asymmetric_obs: bool,
-        dof_position: torch.Tensor,
-        dof_velocity: torch.Tensor,
-        object_state: torch.Tensor,
-        object_goal_poses: torch.Tensor,
-        actions: torch.Tensor,
-        fingertip_state: torch.Tensor,
-        joint_torques: torch.Tensor,
-        tip_wrenches: torch.Tensor
-):
-
-    num_envs = dof_position.shape[0]
-
-    obs_buf = torch.cat([
-        dof_position,
-        dof_velocity,
-        object_state[:, 0:7], # pose
-        object_goal_poses,
-        actions
-    ], dim=-1)
-
-    if asymmetric_obs:
-        states_buf = torch.cat([
-            obs_buf,
-            object_state[:, 7:13], # linear / angular velocity
-            fingertip_state.reshape(num_envs, -1),
-            joint_torques,
-            tip_wrenches
-        ], dim=-1)
-    else:
-        states_buf = obs_buf
-
-    return obs_buf, states_buf
-
-"""
-Sampling of cuboidal object
-"""
-
-
-@torch.jit.script
-def random_xy(num: int, max_com_distance_to_center: float, device: str) -> Tuple[torch.Tensor, torch.Tensor]:
-    """Returns sampled uniform positions in circle (https://stackoverflow.com/a/50746409)"""
-    # sample radius of circle
-    radius = torch.sqrt(torch.rand(num, dtype=torch.float, device=device))
-    radius *= max_com_distance_to_center
-    # sample theta of point
-    theta = 2 * np.pi * torch.rand(num, dtype=torch.float, device=device)
-    # x,y-position of the cube
-    x = radius * torch.cos(theta)
-    y = radius * torch.sin(theta)
-
-    return x, y
-
-
-@torch.jit.script
-def random_z(num: int, min_height: float, max_height: float, device: str) -> torch.Tensor:
-    """Returns sampled height of the goal object."""
-    z = torch.rand(num, dtype=torch.float, device=device)
-    z = (max_height - min_height) * z + min_height
-
-    return z
-
-
-@torch.jit.script
-def default_orientation(num: int, device: str) -> torch.Tensor:
-    """Returns identity rotation transform."""
-    quat = torch.zeros((num, 4,), dtype=torch.float, device=device)
-    quat[..., -1] = 1.0
-
-    return quat
-
-
-@torch.jit.script
-def random_orientation(num: int, device: str) -> torch.Tensor:
-    """Returns sampled rotation in 3D as quaternion.
-    Ref: https://docs.scipy.org/doc/scipy/reference/generated/scipy.spatial.transform.Rotation.random.html
-    """
-    # sample random orientation from normal distribution
-    quat = torch.randn((num, 4,), dtype=torch.float, device=device)
-    # normalize the quaternion
-    quat = torch.nn.functional.normalize(quat, p=2., dim=-1, eps=1e-12)
-
-    return quat
-
-@torch.jit.script
-def random_orientation_within_angle(num: int, device:str, base: torch.Tensor, max_angle: float):
-    """ Generates random quaternions within max_angle of base
-    Ref: https://math.stackexchange.com/a/3448434
-    """
-    quat = torch.zeros((num, 4,), dtype=torch.float, device=device)
-
-    rand = torch.rand((num, 3), dtype=torch.float, device=device)
-
-    c = torch.cos(rand[:, 0]*max_angle)
-    n = torch.sqrt((1.-c)/2.)
-
-    quat[:, 3] = torch.sqrt((1+c)/2.)
-    quat[:, 2] = (rand[:, 1]*2.-1.) * n
-    quat[:, 0] = (torch.sqrt(1-quat[:, 2]**2.) * torch.cos(2*np.pi*rand[:, 2])) * n
-    quat[:, 1] = (torch.sqrt(1-quat[:, 2]**2.) * torch.sin(2*np.pi*rand[:, 2])) * n
-
-    # floating point errors can cause it to  be slightly off, re-normalise
-    quat = torch.nn.functional.normalize(quat, p=2., dim=-1, eps=1e-12)
-
-    return quat_mul(quat, base)
-
-
-@torch.jit.script
-def random_angular_vel(num: int, device: str, magnitude_stdev: float) -> torch.Tensor:
-    """Samples a random angular velocity with standard deviation `magnitude_stdev`"""
-
-    axis = torch.randn((num, 3,), dtype=torch.float, device=device)
-    axis /= torch.norm(axis, p=2, dim=-1).view(-1, 1)
-    magnitude = torch.randn((num, 1,), dtype=torch.float, device=device)
-    magnitude *= magnitude_stdev
-    return magnitude * axis
-
-@torch.jit.script
-def random_yaw_orientation(num: int, device: str) -> torch.Tensor:
-    """Returns sampled rotation around z-axis."""
-    roll = torch.zeros(num, dtype=torch.float, device=device)
-    pitch = torch.zeros(num, dtype=torch.float, device=device)
-    yaw = 2 * np.pi * torch.rand(num, dtype=torch.float, device=device)
-
-    return quat_from_euler_xyz(roll, pitch, yaw)
+    return total_reward, reset, info, consecutive_successes

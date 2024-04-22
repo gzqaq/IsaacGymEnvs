@@ -43,52 +43,36 @@ from .humanoid_amp import HumanoidAMP
 from .ingenuity import Ingenuity
 from .quadcopter import Quadcopter
 from .shadow_hand import ShadowHand
+from .shadow_hand_spin import ShadowHandSpin
+from .shadow_hand_upside_down import ShadowHandUpsideDown
 from .allegro_hand import AllegroHand
 from .dextreme.allegro_hand_dextreme import AllegroHandDextremeManualDR, AllegroHandDextremeADR
 from .trifinger import Trifinger
 
-from .allegro_kuka.allegro_kuka_reorientation import AllegroKukaReorientation
-from .allegro_kuka.allegro_kuka_regrasping import AllegroKukaRegrasping
-from .allegro_kuka.allegro_kuka_throw import AllegroKukaThrow
-from .allegro_kuka.allegro_kuka_two_arms_regrasping import AllegroKukaTwoArmsRegrasping
-from .allegro_kuka.allegro_kuka_two_arms_reorientation import AllegroKukaTwoArmsReorientation
-
-from .industreal.industreal_task_pegs_insert import IndustRealTaskPegsInsert
-from .industreal.industreal_task_gears_insert import IndustRealTaskGearsInsert
-
-
-def resolve_allegro_kuka(cfg, *args, **kwargs):
-    subtask_name: str = cfg["env"]["subtask"]
-    subtask_map = dict(
-        reorientation=AllegroKukaReorientation,
-        throw=AllegroKukaThrow,
-        regrasping=AllegroKukaRegrasping,
-    )
-
-    if subtask_name not in subtask_map:
-        print("!!!!!")
-        raise ValueError(f"Unknown subtask={subtask_name} in {subtask_map}")
-
-    return subtask_map[subtask_name](cfg, *args, **kwargs)
-
-def resolve_allegro_kuka_two_arms(cfg, *args, **kwargs):
-    subtask_name: str = cfg["env"]["subtask"]
-    subtask_map = dict(
-        reorientation=AllegroKukaTwoArmsReorientation,
-        regrasping=AllegroKukaTwoArmsRegrasping,
-    )
-
-    if subtask_name not in subtask_map:
-        raise ValueError(f"Unknown subtask={subtask_name} in {subtask_map}")
-
-    return subtask_map[subtask_name](cfg, *args, **kwargs)
-
+from .shadow_hand_block_stack import ShadowHandBlockStack
+from .shadow_hand_bottle_cap import ShadowHandBottleCap
+from .shadow_hand_catch_abreast import ShadowHandCatchAbreast
+from .shadow_hand_catch_over2underarm import ShadowHandCatchOver2Underarm
+from .shadow_hand_catch_underarm import ShadowHandCatchUnderarm
+from .shadow_hand_door_close_inward import ShadowHandDoorCloseInward
+from .shadow_hand_door_close_outward import ShadowHandDoorCloseOutward
+from .shadow_hand_door_open_inward import ShadowHandDoorOpenInward
+from .shadow_hand_door_open_outward import ShadowHandDoorOpenOutward
+from .shadow_hand_grasp_and_place import ShadowHandGraspAndPlace
+from .shadow_hand_kettle import ShadowHandKettle
+from .shadow_hand_lift_underarm import ShadowHandLiftUnderarm
+from .shadow_hand_over import ShadowHandOver
+from .shadow_hand_pen import ShadowHandPen
+from .shadow_hand_push_block import ShadowHandPushBlock
+from .shadow_hand_re_orientation import ShadowHandReOrientation
+from .shadow_hand_scissors import ShadowHandScissors
+from .shadow_hand_swing_cup import ShadowHandSwingCup
+from .shadow_hand_switch import ShadowHandSwitch
+from .shadow_hand_two_catch_underarm import ShadowHandTwoCatchUnderarm
 
 # Mappings from strings to environments
 isaacgym_task_map = {
     "AllegroHand": AllegroHand,
-    "AllegroKuka": resolve_allegro_kuka,
-    "AllegroKukaTwoArms": resolve_allegro_kuka_two_arms,
     "AllegroHandManualDR": AllegroHandDextremeManualDR,
     "AllegroHandADR": AllegroHandDextremeADR,
     "Ant": Ant,
@@ -101,8 +85,6 @@ isaacgym_task_map = {
     "FactoryTaskNutBoltPick": FactoryTaskNutBoltPick,
     "FactoryTaskNutBoltPlace": FactoryTaskNutBoltPlace,
     "FactoryTaskNutBoltScrew": FactoryTaskNutBoltScrew,
-    "IndustRealTaskPegsInsert": IndustRealTaskPegsInsert,
-    "IndustRealTaskGearsInsert": IndustRealTaskGearsInsert,
     "FrankaCabinet": FrankaCabinet,
     "FrankaCubeStack": FrankaCubeStack,
     "Humanoid": Humanoid,
@@ -110,5 +92,29 @@ isaacgym_task_map = {
     "Ingenuity": Ingenuity,
     "Quadcopter": Quadcopter,
     "ShadowHand": ShadowHand,
+    "ShadowHandSpin": ShadowHandSpin, 
+    "ShadowHandUpsideDown": ShadowHandUpsideDown,
     "Trifinger": Trifinger,
+
+    "ShadowHandBlockStack": ShadowHandBlockStack,
+    "ShadowHandBottleCap": ShadowHandBottleCap,
+    "ShadowHandCatchAbreast": ShadowHandCatchAbreast,
+    "ShadowHandCatchOver2Underarm": ShadowHandCatchOver2Underarm,
+    "ShadowHandCatchUnderarm": ShadowHandCatchUnderarm,
+    "ShadowHandDoorCloseInward": ShadowHandDoorCloseInward,
+    "ShadowHandDoorCloseOutward": ShadowHandDoorCloseOutward,
+    "ShadowHandDoorOpenInward": ShadowHandDoorOpenInward,
+    "ShadowHandDoorOpenOutward": ShadowHandDoorOpenOutward,
+    "ShadowHandGraspAndPlace": ShadowHandGraspAndPlace,
+    "ShadowHandKettle": ShadowHandKettle,
+    "ShadowHandLiftUnderarm": ShadowHandLiftUnderarm,
+    "ShadowHandOver": ShadowHandOver,
+    "ShadowHandPen": ShadowHandPen,
+    "ShadowHandPushBlock": ShadowHandPushBlock,
+    "ShadowHandReOrientation": ShadowHandReOrientation,
+    "ShadowHandScissors": ShadowHandScissors,
+    "ShadowHandSwingCup": ShadowHandSwingCup,
+    "ShadowHandSwitch": ShadowHandSwitch,
+    "ShadowHandTwoCatchUnderarm": ShadowHandTwoCatchUnderarm,
 }
+

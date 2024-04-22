@@ -34,6 +34,7 @@ from itertools import permutations
 from tkinter import W
 from typing import Tuple, Dict, List, Set
 
+
 import numpy as np
 
 import torch
@@ -41,7 +42,7 @@ import torch
 from isaacgym import gymapi
 from isaacgym import gymtorch
 
-from isaacgymenvs.utils.torch_jit_utils import scale, unscale, quat_mul, quat_conjugate, quat_from_angle_axis, \
+from isaacgym.torch_utils import scale, unscale, quat_mul, quat_conjugate, quat_from_angle_axis, \
     to_torch, get_axis_params, torch_rand_float, tensor_clamp  
 
 from torch import Tensor
@@ -222,7 +223,7 @@ class AllegroHandDextreme(ADRVecTask):
 
         if "asset" in self.cfg["env"]:
             asset_root = self.cfg["env"]["asset"].get("assetRoot", asset_root)
-            hand_asset_file = self.cfg["env"]["asset"].get("assetFileName", hand_asset_file)
+            asset_file = self.cfg["env"]["asset"].get("assetFileName", hand_asset_file)
 
         object_asset_file = self.asset_files_dict[self.object_type]
 

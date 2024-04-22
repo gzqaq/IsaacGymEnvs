@@ -25,7 +25,6 @@
 # CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
 # OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-
 import os
 from collections import deque
 from typing import Callable, Dict, Tuple, Any
@@ -36,10 +35,11 @@ import numpy as np
 import torch
 from rl_games.common import env_configurations, vecenv
 from rl_games.common.algo_observer import AlgoObserver
+from rl_games.algos_torch import torch_ext
 
 from isaacgymenvs.tasks import isaacgym_task_map
 from isaacgymenvs.utils.utils import set_seed, flatten_dict
-
+from eureka.utils.file_utils import import_class_from_file
 
 def multi_gpu_get_rank(multi_gpu):
     if multi_gpu:
@@ -59,7 +59,8 @@ def get_rlgames_env_creator(
         rl_device: str,
         graphics_device_id: int,
         headless: bool,
-        # used to handle multi-gpu case
+        env_path: str = '',
+        # Used to handle multi-gpu case
         multi_gpu: bool = False,
         post_create_hook: Callable = None,
         virtual_screen_capture: bool = False,
@@ -87,30 +88,37 @@ def get_rlgames_env_creator(
         Creates the task from configurations and wraps it using RL-games wrappers if required.
         """
         if multi_gpu:
+            # import horovod.torch as hvd
 
-            local_rank = int(os.getenv("LOCAL_RANK", "0"))
-            global_rank = int(os.getenv("RANK", "0"))
+            # hvd.init()
 
-            # local rank of the GPU in a node
-            local_rank = int(os.getenv("LOCAL_RANK", "0"))
-            # global rank of the GPU
-            global_rank = int(os.getenv("RANK", "0"))
-            # total number of GPUs across all nodes
-            world_size = int(os.getenv("WORLD_SIZE", "1"))
+            # rank = hvd.rank()
 
-            print(f"global_rank = {global_rank} local_rank = {local_rank} world_size = {world_size}")
+            rank = int(os.getenv("LOCAL_RANK", "0"))
 
-            _sim_device = f'cuda:{local_rank}'
-            _rl_device = f'cuda:{local_rank}'
+            # set_seed(seed + rank)
 
-            task_config['rank'] = local_rank
-            task_config['rl_device'] = _rl_device
+            print("Horovod rank: ", rank)
+
+            _sim_device = f'cuda:{rank}'
+            _rl_device = f'cuda:{rank}'
+
+            task_config['rank'] = rank
+            task_config['rl_device'] = 'cuda:' + str(rank)
         else:
             _sim_device = sim_device
             _rl_device = rl_device
-
-        # create native task and pass custom config
-        env = isaacgym_task_map[task_name](
+            
+        try:
+            # task_caller = import_class_from_file(env_path, task_name)
+            import importlib
+            module_name = f"isaacgymenvs.tasks.{task_config['env']['env_name'].lower()}"
+            module = importlib.import_module(module_name)
+            task_caller = getattr(module, task_name)
+        except:
+            task_caller = isaacgym_task_map[task_name]
+        
+        env = task_caller(
             cfg=task_config,
             rl_device=_rl_device,
             sim_device=_sim_device,
@@ -204,9 +212,10 @@ class RLGPUAlgoObserver(AlgoObserver):
             self.new_finished_episodes = False
 
         for k, v in self.direct_info.items():
-            self.writer.add_scalar(f'{k}/frame', v, frame)
-            self.writer.add_scalar(f'{k}/iter', v, epoch_num)
-            self.writer.add_scalar(f'{k}/time', v, total_time)
+            self.writer.add_scalar(f'{k}', v, epoch_num)
+            # self.writer.add_scalar(f'{k}/frame', v, frame)
+            # self.writer.add_scalar(f'{k}/iter', v, epoch_num)
+            # self.writer.add_scalar(f'{k}/time', v, total_time)
 
 
 class MultiObserver(AlgoObserver):
@@ -244,7 +253,7 @@ class RLGPUEnv(vecenv.IVecEnv):
         self.env = env_configurations.configurations[config_name]['env_creator'](**kwargs)
 
     def step(self, actions):
-        return self.env.step(actions)
+        return  self.env.step(actions)
 
     def reset(self):
         return self.env.reset()
@@ -259,7 +268,6 @@ class RLGPUEnv(vecenv.IVecEnv):
         info = {}
         info['action_space'] = self.env.action_space
         info['observation_space'] = self.env.observation_space
-
         if hasattr(self.env, "amp_observation_space"):
             info['amp_observation_space'] = self.env.amp_observation_space
 
@@ -293,7 +301,6 @@ class RLGPUEnv(vecenv.IVecEnv):
     def set_env_state(self, env_state):
         if hasattr(self.env, 'set_env_state'):
             self.env.set_env_state(env_state)
-
 
 class ComplexObsRLGPUEnv(vecenv.IVecEnv):
     

@@ -26,6 +26,7 @@
 # OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 import os
+import re
 from collections import deque
 from typing import Callable, Dict, Tuple, Any
 
@@ -40,6 +41,12 @@ from rl_games.algos_torch import torch_ext
 
 from isaacgymenvs.tasks import isaacgym_task_map
 from isaacgymenvs.utils.utils import set_seed, flatten_dict
+
+
+def camel_to_snake(name):
+    name = re.sub('(.)([A-Z][a-z]+)', r'\1_\2', name)
+    return re.sub('([a-z0-9])([A-Z])', r'\1_\2', name).lower()
+
 
 def import_class_from_file(file_path, function_name):
     spec = importlib.util.spec_from_file_location("module.name", file_path)
@@ -121,7 +128,9 @@ def get_rlgames_env_creator(
         try:
             # task_caller = import_class_from_file(env_path, task_name)
             import importlib
-            module_name = f"isaacgymenvs.tasks.{task_config['env']['env_name'].lower()}"
+            env_config = task_config["env"]
+            env_name = env_config.get("env_name", camel_to_snake(env_config["name"]))
+            module_name = f"isaacgymenvs.tasks.{env_name.lower()}"
             module = importlib.import_module(module_name)
             task_caller = getattr(module, task_name)
         except ImportError:

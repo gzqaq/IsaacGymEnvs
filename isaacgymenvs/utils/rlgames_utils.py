@@ -129,7 +129,7 @@ def get_rlgames_env_creator(
             # task_caller = import_class_from_file(env_path, task_name)
             import importlib
             env_config = task_config["env"]
-            env_name = env_config.get("env_name", camel_to_snake(env_config["name"]))
+            env_name = env_config.get("env_name", camel_to_snake(task_config["name"]))
             module_name = f"isaacgymenvs.tasks.{env_name.lower()}"
             module = importlib.import_module(module_name)
             task_caller = getattr(module, task_name)
